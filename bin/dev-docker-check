@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SELF_DIR/dev-common"
+
+REPO=""
+PROFILE=""
+PACKAGE=""
+BUILDER=""
+RUN_TEST=0
+IMAGE=""
+OPEN_SHELL=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    --package) PACKAGE="$2"; shift 2 ;;
+    --builder) BUILDER="$2"; shift 2 ;;
+    --test) RUN_TEST=1; shift ;;
+    --image) IMAGE="$2"; shift 2 ;;
+    --shell) OPEN_SHELL=1; shift ;;
+    -h|--help)
+      echo "Usage: dev-docker-check [--repo PATH] [--profile NAME] [--package NAME] [--builder auto|catkin|catkin_make] [--test] [--shell]"
+      exit 0 ;;
+    *) dev_die "unknown argument: $1" ;;
+  esac
+done
+
+dev_load_profile "$PROFILE"
+ROOT="$(dev_resolve_repo "$REPO")"
+PACKAGE="${PACKAGE:-${DEV_ROS_PACKAGE:-}}"
+BUILDER="${BUILDER:-${DEV_ROS_BUILDER:-auto}}"
+IMAGE="${IMAGE:-${DEV_DOCKER_IMAGE:-}}"
+[[ -n "$IMAGE" ]] || dev_die "Docker image required; set DEV_DOCKER_IMAGE in the profile or pass --image"
+
+command -v docker >/dev/null 2>&1 || dev_die "docker not found"
+repo_name="$(basename "$ROOT")"
+
+docker_args=(run --rm)
+[[ "$OPEN_SHELL" -eq 1 ]] && docker_args+=(-it)
+docker_args+=(-v "$ROOT:/host_repo:ro" "$IMAGE")
+
+docker "${docker_args[@]}" bash -lc "
+set -euo pipefail
+source /opt/ros/noetic/setup.bash
+
+builder='$BUILDER'
+if [[ \"\$builder\" == auto ]]; then
+  if command -v catkin >/dev/null 2>&1; then
+    builder=catkin
+  elif command -v catkin_make >/dev/null 2>&1; then
+    builder=catkin_make
+  else
+    echo 'ERROR: neither catkin nor catkin_make found in image' >&2
+    exit 2
+  fi
+fi
+
+rm -rf /ws
+mkdir -p /ws/src/'$repo_name'
+cp -a /host_repo/. /ws/src/'$repo_name'/
+cd /ws
+
+if [[ \"\$builder\" == catkin ]]; then
+  catkin init
+  catkin config --extend /opt/ros/noetic
+  catkin build '$PACKAGE' --no-status --cmake-args -DCATKIN_ENABLE_TESTING=$([[ "$RUN_TEST" -eq 1 ]] && echo ON || echo OFF)
+  source /ws/devel/setup.bash
+  if [[ '$RUN_TEST' -eq 1 ]]; then
+    catkin run_tests '$PACKAGE' --no-status
+  fi
+else
+  catkin_make --only-pkg-with-deps '$PACKAGE' -DCATKIN_ENABLE_TESTING=$([[ "$RUN_TEST" -eq 1 ]] && echo ON || echo OFF)
+  source /ws/devel/setup.bash
+  if [[ '$RUN_TEST' -eq 1 ]]; then
+    catkin_make 'run_tests_$PACKAGE'
+  fi
+fi
+
+$([[ "$OPEN_SHELL" -eq 1 ]] && echo "exec bash" || echo ":")
+"

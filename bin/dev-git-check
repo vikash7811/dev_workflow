@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SELF_DIR/dev-common"
+
+REPO=""
+PROFILE=""
+GIT_PROFILE=""
+REMOTE=""
+FIX_AUTHOR=0
+FIX_REMOTE=0
+
+usage() {
+  cat <<'USAGE'
+Validate repository Git author and SSH remote against a configured identity.
+
+Usage:
+  dev-git-check [--repo PATH] [--profile PROJECT_PROFILE]
+                [--git-profile IDENTITY] [--remote NAME]
+                [--fix-author] [--fix-remote] [--fix]
+
+Identity resolution:
+  --git-profile -> project DEV_GIT_PROFILE -> active dev-git-config profile
+
+--fix-author updates repository-local user.name/user.email only.
+--fix-remote rewrites the configured Git remote to use the SSH alias while
+preserving the repository path. It does not edit ~/.ssh/config.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    --git-profile) GIT_PROFILE="$2"; shift 2 ;;
+    --remote) REMOTE="$2"; shift 2 ;;
+    --fix-author) FIX_AUTHOR=1; shift ;;
+    --fix-remote) FIX_REMOTE=1; shift ;;
+    --fix) FIX_AUTHOR=1; FIX_REMOTE=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) dev_die "unknown argument: $1" ;;
+  esac
+done
+
+dev_load_profile "$PROFILE"
+ROOT="$(dev_resolve_repo "$REPO")"
+identity="$(dev_resolve_git_profile_name "$GIT_PROFILE")"
+if [[ -z "$identity" ]]; then
+  echo "SKIP: no Git identity profile configured."
+  echo "Configure one with: dev-git-config set NAME ..."
+  exit 0
+fi
+
+dev_load_git_profile "$identity"
+REMOTE="${REMOTE:-${DEV_GIT_REMOTE:-origin}}"
+expected_key="$(dev_expand_user_path "${DEV_GIT_SSH_KEY:-}")"
+failed=0
+
+printf 'Git profile : %s\n' "$identity"
+printf 'Repository  : %s\n' "$ROOT"
+printf 'Git remote  : %s\n' "$REMOTE"
+
+actual_name="$(git -C "$ROOT" config --get user.name 2>/dev/null || true)"
+actual_email="$(git -C "$ROOT" config --get user.email 2>/dev/null || true)"
+if [[ "$actual_name" != "$DEV_GIT_AUTHOR_NAME" || "$actual_email" != "$DEV_GIT_AUTHOR_EMAIL" ]]; then
+  if [[ "$FIX_AUTHOR" -eq 1 ]]; then
+    git -C "$ROOT" config user.name "$DEV_GIT_AUTHOR_NAME"
+    git -C "$ROOT" config user.email "$DEV_GIT_AUTHOR_EMAIL"
+    actual_name="$DEV_GIT_AUTHOR_NAME"
+    actual_email="$DEV_GIT_AUTHOR_EMAIL"
+    echo "FIXED: repository-local Git author"
+  else
+    echo "ERROR: Git author mismatch" >&2
+    echo "  Expected: ${DEV_GIT_AUTHOR_NAME} <${DEV_GIT_AUTHOR_EMAIL}>" >&2
+    echo "  Actual  : ${actual_name:-<unset>} <${actual_email:-<unset>}>" >&2
+    echo "  Fix with: dev-git-check --repo '$ROOT' --git-profile '$identity' --fix-author" >&2
+    failed=1
+  fi
+fi
+printf 'Git author  : %s <%s>\n' "$actual_name" "$actual_email"
+
+remote_url="$(git -C "$ROOT" remote get-url "$REMOTE" 2>/dev/null || true)"
+if [[ -z "$remote_url" ]]; then
+  echo "ERROR: Git remote not found: $REMOTE" >&2
+  failed=1
+else
+  remote_host=""
+  remote_path=""
+  remote_kind=""
+  if [[ "$remote_url" =~ ^([^@/]+)@([^:]+):(.+)$ ]]; then
+    remote_kind="scp"
+    remote_host="${BASH_REMATCH[2]}"
+    remote_path="${BASH_REMATCH[3]}"
+  elif [[ "$remote_url" =~ ^ssh://([^@/]+@)?([^/:]+)(:[0-9]+)?/(.+)$ ]]; then
+    remote_kind="ssh"
+    remote_host="${BASH_REMATCH[2]}"
+    remote_path="${BASH_REMATCH[4]}"
+  elif [[ "$remote_url" =~ ^https?://([^/]+)/(.+)$ ]]; then
+    remote_kind="http"
+    remote_host="${BASH_REMATCH[1]}"
+    remote_path="${BASH_REMATCH[2]}"
+  fi
+
+  if [[ "$remote_host" != "$DEV_GIT_SSH_ALIAS" ]]; then
+    if [[ "$FIX_REMOTE" -eq 1 ]]; then
+      if [[ "$remote_host" != "$DEV_GIT_SSH_HOST" && "$remote_host" != "$DEV_GIT_SSH_ALIAS" ]]; then
+        echo "ERROR: refusing to rewrite unrelated remote host '$remote_host'" >&2
+        echo "  Expected service host: $DEV_GIT_SSH_HOST" >&2
+        failed=1
+      elif [[ -z "$remote_path" ]]; then
+        echo "ERROR: unsupported remote URL; cannot safely preserve repository path: $remote_url" >&2
+        failed=1
+      else
+        new_url="${DEV_GIT_SSH_USER:-git}@${DEV_GIT_SSH_ALIAS}:${remote_path}"
+        git -C "$ROOT" remote set-url "$REMOTE" "$new_url"
+        remote_url="$new_url"
+        remote_host="$DEV_GIT_SSH_ALIAS"
+        echo "FIXED: $REMOTE remote now uses SSH alias '$DEV_GIT_SSH_ALIAS'"
+      fi
+    else
+      echo "ERROR: Git profile/remote mismatch" >&2
+      echo "  Expected SSH alias: $DEV_GIT_SSH_ALIAS" >&2
+      echo "  Remote URL        : $remote_url" >&2
+      if [[ "$remote_host" == "$DEV_GIT_SSH_HOST" ]]; then
+        echo "  Fix with: dev-git-check --repo '$ROOT' --git-profile '$identity' --fix-remote" >&2
+      fi
+      failed=1
+    fi
+  fi
+  printf 'Origin URL  : %s\n' "$remote_url"
+fi
+
+if ! command -v ssh >/dev/null 2>&1; then
+  echo "ERROR: ssh command not found" >&2
+  failed=1
+else
+  set +e
+  ssh_cfg="$(ssh -G "$DEV_GIT_SSH_ALIAS" 2>/dev/null)"
+  ssh_rc=$?
+  set -e
+  if [[ "$ssh_rc" -ne 0 || -z "$ssh_cfg" ]]; then
+    echo "ERROR: cannot resolve SSH alias '$DEV_GIT_SSH_ALIAS'" >&2
+    echo "  Generate config with: dev-git-config ssh-snippet '$identity'" >&2
+    failed=1
+  else
+    resolved_host="$(awk '$1=="hostname" {print $2; exit}' <<<"$ssh_cfg")"
+    resolved_user="$(awk '$1=="user" {print $2; exit}' <<<"$ssh_cfg")"
+    identities_only="$(awk '$1=="identitiesonly" {print $2; exit}' <<<"$ssh_cfg")"
+    if [[ "$resolved_host" != "$DEV_GIT_SSH_HOST" ]]; then
+      echo "ERROR: SSH alias '$DEV_GIT_SSH_ALIAS' resolves to '${resolved_host:-<unknown>}', expected '$DEV_GIT_SSH_HOST'" >&2
+      echo "  Generate config with: dev-git-config ssh-snippet '$identity'" >&2
+      failed=1
+    fi
+    if [[ "$resolved_user" != "${DEV_GIT_SSH_USER:-git}" ]]; then
+      echo "ERROR: SSH alias user is '${resolved_user:-<unknown>}', expected '${DEV_GIT_SSH_USER:-git}'" >&2
+      failed=1
+    fi
+    if [[ -n "$expected_key" ]]; then
+      if [[ ! -f "$expected_key" ]]; then
+        echo "ERROR: configured SSH key does not exist: $expected_key" >&2
+        failed=1
+      fi
+      key_found=0
+      while IFS= read -r configured_key; do
+        configured_key="$(dev_expand_user_path "$configured_key")"
+        [[ "$configured_key" == "$expected_key" ]] && key_found=1
+      done < <(awk '$1=="identityfile" {print $2}' <<<"$ssh_cfg")
+      if [[ "$key_found" -ne 1 ]]; then
+        echo "ERROR: SSH alias '$DEV_GIT_SSH_ALIAS' does not select configured key: $expected_key" >&2
+        echo "  Generate config with: dev-git-config ssh-snippet '$identity'" >&2
+        failed=1
+      fi
+      if [[ "$identities_only" != "yes" ]]; then
+        echo "WARN: SSH alias does not set IdentitiesOnly yes; another loaded key may be tried first." >&2
+      fi
+    fi
+    printf 'SSH target  : %s@%s via %s\n' "${resolved_user:-?}" "${resolved_host:-?}" "$DEV_GIT_SSH_ALIAS"
+    [[ -z "$expected_key" ]] || printf 'SSH key     : %s\n' "$expected_key"
+  fi
+fi
+
+[[ "$failed" -eq 0 ]] || exit 2
+echo "PASS"

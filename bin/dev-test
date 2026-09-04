@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SELF_DIR/dev-common"
+
+REPO=""
+PROFILE=""
+BUILD_DIR=""
+CLEAN=1
+CTEST_ONLY=0
+GTEST_ONLY=0
+JOBS="$(dev_jobs)"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    --build-dir) BUILD_DIR="$2"; shift 2 ;;
+    --no-clean) CLEAN=0; shift ;;
+    --ctest-only) CTEST_ONLY=1; shift ;;
+    --gtest-only) GTEST_ONLY=1; shift ;;
+    --jobs) JOBS="$2"; shift 2 ;;
+    -h|--help)
+      echo "Usage: dev-test [--repo PATH] [--profile NAME] [--no-clean] [--ctest-only|--gtest-only]"
+      exit 0 ;;
+    *) dev_die "unknown argument: $1" ;;
+  esac
+done
+
+dev_load_profile "$PROFILE"
+ROOT="$(dev_resolve_repo "$REPO")"
+NAME="${DEV_TMP_BUILD_NAME:-$(basename "$ROOT")_test_all}"
+BUILD_DIR="${BUILD_DIR:-/tmp/$NAME}"
+TEST_FLAG="${DEV_CMAKE_TEST_FLAG:--DBUILD_TESTING=ON}"
+GLOB="${DEV_GTEST_GLOB:-*_tests}"
+
+export PYTHONDONTWRITEBYTECODE=1
+[[ "$CLEAN" -eq 0 ]] || rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR/logs/gtest"
+
+dev_section "Configure"
+cmake -S "$ROOT" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=RelWithDebInfo "$TEST_FLAG"
+
+dev_section "Build"
+cmake --build "$BUILD_DIR" -j"$JOBS"
+
+if [[ "$GTEST_ONLY" -eq 0 ]]; then
+  dev_section "CTest"
+  ctest --test-dir "$BUILD_DIR" -N | tee "$BUILD_DIR/logs/ctest_manifest.txt"
+  ctest --test-dir "$BUILD_DIR" --output-on-failure -j"$JOBS" |
+    tee "$BUILD_DIR/logs/ctest.log"
+fi
+
+if [[ "$CTEST_ONLY" -eq 0 ]]; then
+  dev_section "Direct GTest executables"
+  mapfile -t bins < <(find "$BUILD_DIR" -type f -perm -111 -name "$GLOB" | sort)
+  printf '%s\n' "${bins[@]:-}" > "$BUILD_DIR/logs/gtest_manifest.txt"
+
+  for bin in "${bins[@]}"; do
+    name="$(basename "$bin")"
+    echo "== $name =="
+    "$bin" 2>&1 | tee "$BUILD_DIR/logs/gtest/$name.log"
+  done
+fi
+
+echo
+echo "ALL STANDALONE TESTS PASSED"

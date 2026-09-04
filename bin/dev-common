@@ -1,0 +1,417 @@
+#!/usr/bin/env bash
+
+dev_die() {
+  echo "ERROR: $*" >&2
+  exit 2
+}
+
+dev_section() {
+  printf '\n==== %s ====\n' "$*"
+}
+
+dev_home() {
+  if [[ -n "${DEV_WORKFLOW_HOME:-}" ]]; then
+    printf '%s\n' "$DEV_WORKFLOW_HOME"
+  else
+    cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd
+  fi
+}
+
+dev_config_dir() {
+  local base="${XDG_CONFIG_HOME:-$HOME/.config}"
+  printf '%s\n' "$base/dev-workflow"
+}
+
+
+
+dev_git_profiles_dir() {
+  printf '%s/git-profiles\n' "$(dev_config_dir)"
+}
+
+dev_active_git_profile_file() {
+  printf '%s/active_git_profile\n' "$(dev_config_dir)"
+}
+
+dev_git_profile_path() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || return 1
+  local dir
+  dir="$(dev_git_profiles_dir)"
+  [[ -f "$dir/$name.conf" ]] || return 1
+  printf '%s\n' "$dir/$name.conf"
+}
+
+dev_get_active_git_profile() {
+  local file value
+  file="$(dev_active_git_profile_file)"
+  [[ -f "$file" ]] || return 1
+  value="$(head -n1 "$file" | tr -d '\r\n')"
+  [[ -n "$value" ]] || return 1
+  printf '%s\n' "$value"
+}
+
+dev_set_active_git_profile() {
+  local name="$1" dir file tmp
+  dev_git_profile_path "$name" >/dev/null || dev_die "Git identity profile not found: $name"
+  dir="$(dev_config_dir)"
+  file="$(dev_active_git_profile_file)"
+  mkdir -p "$dir"
+  tmp="${file}.tmp.$$"
+  printf '%s\n' "$name" > "$tmp"
+  mv "$tmp" "$file"
+}
+
+dev_clear_active_git_profile() {
+  rm -f "$(dev_active_git_profile_file)"
+}
+
+dev_load_git_profile() {
+  local name="${1:-}" path
+  DEV_GIT_IDENTITY_PROFILE=""
+  DEV_GIT_AUTHOR_NAME=""
+  DEV_GIT_AUTHOR_EMAIL=""
+  DEV_GIT_SSH_ALIAS=""
+  DEV_GIT_SSH_HOST=""
+  DEV_GIT_SSH_USER="git"
+  DEV_GIT_SSH_KEY=""
+  DEV_GIT_REMOTE="origin"
+
+  [[ -n "$name" ]] || return 1
+  path="$(dev_git_profile_path "$name")" || dev_die "Git identity profile not found: $name"
+  DEV_GIT_IDENTITY_PROFILE="$name"
+  # shellcheck disable=SC1090
+  source "$path"
+}
+
+dev_resolve_git_profile_name() {
+  local explicit="${1:-}"
+  if [[ -n "$explicit" ]]; then
+    printf '%s\n' "$explicit"
+  elif [[ -n "${DEV_GIT_PROFILE:-}" ]]; then
+    printf '%s\n' "$DEV_GIT_PROFILE"
+  else
+    dev_get_active_git_profile 2>/dev/null || true
+  fi
+}
+
+dev_expand_user_path() {
+  local value="${1:-}"
+  value="${value/#\~/$HOME}"
+  printf '%s\n' "$value"
+}
+
+dev_active_profile_file() {
+  printf '%s/active_profile\n' "$(dev_config_dir)"
+}
+
+dev_profile_path() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || return 1
+
+  local home
+  home="$(dev_home)"
+
+  if [[ -f "$name" ]]; then
+    printf '%s\n' "$(cd "$(dirname "$name")" && pwd)/$(basename "$name")"
+  elif [[ -f "$home/profiles/$name" ]]; then
+    printf '%s\n' "$home/profiles/$name"
+  elif [[ -f "$home/profiles/$name.conf" ]]; then
+    printf '%s\n' "$home/profiles/$name.conf"
+  else
+    return 1
+  fi
+}
+
+dev_get_active_profile() {
+  local file
+  file="$(dev_active_profile_file)"
+  [[ -f "$file" ]] || return 1
+  local value
+  value="$(head -n1 "$file" | tr -d '\r\n')"
+  [[ -n "$value" ]] || return 1
+  printf '%s\n' "$value"
+}
+
+dev_set_active_profile() {
+  local name="$1"
+  dev_profile_path "$name" >/dev/null ||
+    dev_die "profile not found: $name"
+
+  local dir tmp file
+  dir="$(dev_config_dir)"
+  file="$(dev_active_profile_file)"
+  mkdir -p "$dir"
+  tmp="${file}.tmp.$$"
+  printf '%s\n' "$name" > "$tmp"
+  mv "$tmp" "$file"
+}
+
+dev_clear_active_profile() {
+  rm -f "$(dev_active_profile_file)"
+}
+
+dev_load_profile() {
+  local name="${1:-}"
+
+  if [[ -z "$name" ]]; then
+    name="$(dev_get_active_profile 2>/dev/null || true)"
+  fi
+
+  DEV_PROFILE_NAME=""
+  [[ -n "$name" ]] || return 0
+
+  local path
+  path="$(dev_profile_path "$name")" ||
+    dev_die "profile not found: $name"
+
+  DEV_PROFILE_NAME="$name"
+  # shellcheck disable=SC1090
+  source "$path"
+}
+
+dev_effective_profile() {
+  if [[ -n "${DEV_PROFILE_NAME:-}" ]]; then
+    printf '%s\n' "$DEV_PROFILE_NAME"
+  else
+    dev_get_active_profile 2>/dev/null || true
+  fi
+}
+
+dev_resolve_repo() {
+  local repo="${1:-}"
+
+  if [[ -z "$repo" ]]; then
+    repo="${DEV_REPO:-.}"
+  fi
+
+  repo="${repo/#\~/$HOME}"
+  repo="$(cd "$repo" 2>/dev/null && pwd)" ||
+    dev_die "repository path not found: $repo"
+
+  git -C "$repo" rev-parse --show-toplevel >/dev/null 2>&1 ||
+    dev_die "not a Git repository: $repo"
+
+  git -C "$repo" rev-parse --show-toplevel
+}
+
+dev_jobs() {
+  if command -v nproc >/dev/null 2>&1; then
+    nproc
+  else
+    echo 4
+  fi
+}
+
+dev_clean_python_cache() {
+  local root="$1"
+  find "$root" -path '*/.git' -prune -o -type d -name __pycache__ -print0 |
+    while IFS= read -r -d '' d; do rm -rf -- "$d"; done
+  find "$root" -path '*/.git' -prune -o -type f -name '*.pyc' -exec rm -f -- {} +
+}
+
+dev_check_git_exec_semantics() {
+  local root="$1"
+  local failed=0 mode path
+
+  while IFS=$'\t' read -r mode path; do
+    [[ -n "$path" ]] || continue
+    if [[ "$mode" == "100755" ]]; then
+      if [[ ! -x "$root/$path" ]]; then
+        echo "ERROR: Git tracks executable but filesystem is not executable: $path" >&2
+        failed=1
+      fi
+    fi
+  done < <(git -C "$root" ls-files --stage | awk '{print $1 "\t" $4}')
+
+  [[ "$failed" -eq 0 ]] || return 1
+}
+
+dev_find_ros_package_xmls() {
+  local root="$1"
+  find "$root" \
+    -path "$root/.git" -prune -o \
+    -type d \( -name build -o -name devel -o -name install -o -name log \) -prune -o \
+    -type f -name package.xml -print | sort
+}
+
+dev_repo_has_ros() {
+  local root="$1"
+  local first
+  first="$(dev_find_ros_package_xmls "$root" | head -n1)"
+  [[ -n "$first" ]]
+}
+
+dev_ros_package_name() {
+  local package_xml="$1"
+  sed -n 's:.*<name>[[:space:]]*\([^<[:space:]][^<]*\)[[:space:]]*</name>.*:\1:p' "$package_xml" |
+    head -n1 | xargs
+}
+
+dev_detect_ros_version() {
+  local root="$1"
+  local has_ros1=0 has_ros2=0 package_xml
+
+  while IFS= read -r package_xml; do
+    [[ -n "$package_xml" ]] || continue
+    if grep -Eq '<buildtool_depend[^>]*>[[:space:]]*catkin[[:space:]]*</buildtool_depend>|<build_type[^>]*>[[:space:]]*catkin[[:space:]]*</build_type>' "$package_xml"; then
+      has_ros1=1
+    fi
+    if grep -Eq '<buildtool_depend[^>]*>[[:space:]]*ament_[^<[:space:]]+[[:space:]]*</buildtool_depend>|<build_type[^>]*>[[:space:]]*ament_[^<[:space:]]+[[:space:]]*</build_type>' "$package_xml"; then
+      has_ros2=1
+    fi
+  done < <(dev_find_ros_package_xmls "$root")
+
+  if [[ "$has_ros1" -eq 1 && "$has_ros2" -eq 0 ]]; then
+    echo 1
+  elif [[ "$has_ros2" -eq 1 && "$has_ros1" -eq 0 ]]; then
+    echo 2
+  elif [[ "$has_ros1" -eq 1 && "$has_ros2" -eq 1 ]]; then
+    echo mixed
+  fi
+}
+
+dev_detect_ros_workspace() {
+  local root="$1"
+  local current="$root"
+
+  while [[ "$current" != "/" ]]; do
+    if [[ -d "$current/src" ]] &&
+      { [[ "$root" == "$current/src" ]] || [[ "$root" == "$current/src/"* ]]; }; then
+      printf '%s\n' "$current"
+      return 0
+    fi
+    current="$(dirname "$current")"
+  done
+
+  return 1
+}
+
+dev_ros_setup_version() {
+  local setup="$1"
+  bash --noprofile --norc -c '
+    set +u
+    unset ROS_VERSION ROS_DISTRO ROS_PYTHON_VERSION ROS_ETC_DIR ROS_PACKAGE_PATH
+    source "$1" >/dev/null 2>&1 || exit 1
+    printf "%s\n" "${ROS_VERSION:-}"
+  ' _ "$setup"
+}
+
+dev_find_ros_setup() {
+  local version="$1"
+  local distro="${2:-}"
+  local setup detected
+
+  if [[ -n "$distro" ]]; then
+    setup="/opt/ros/$distro/setup.bash"
+    [[ -f "$setup" ]] || return 1
+    detected="$(dev_ros_setup_version "$setup" 2>/dev/null || true)"
+    [[ "$detected" == "$version" ]] || return 1
+    printf '%s\n' "$setup"
+    return 0
+  fi
+
+  local matches=()
+  shopt -s nullglob
+  for setup in /opt/ros/*/setup.bash; do
+    detected="$(dev_ros_setup_version "$setup" 2>/dev/null || true)"
+    if [[ "$detected" == "$version" ]]; then
+      matches+=("$setup")
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ "${#matches[@]}" -eq 1 ]]; then
+    printf '%s\n' "${matches[0]}"
+    return 0
+  fi
+
+  if [[ "${#matches[@]}" -gt 1 ]]; then
+    printf '%s\n' "${matches[@]}" >&2
+    return 2
+  fi
+
+  return 1
+}
+
+dev_activate_ros() {
+  local version="$1"
+  local setup="${2:-}"
+  local distro="${3:-}"
+  local detected rc nounset_was=0
+
+  setup="${setup/#\~/$HOME}"
+
+  if [[ -n "$setup" ]]; then
+    [[ -f "$setup" ]] || dev_die "ROS setup not found: $setup"
+    detected="$(dev_ros_setup_version "$setup" 2>/dev/null || true)"
+    [[ "$detected" == "$version" ]] ||
+      dev_die "ROS setup '$setup' is ROS${detected:-unknown}, expected ROS$version"
+  elif [[ -n "$distro" ]]; then
+    setup="$(dev_find_ros_setup "$version" "$distro" 2>/dev/null || true)"
+    [[ -n "$setup" ]] || dev_die "ROS$distro setup not found for ROS$version"
+  elif [[ "${ROS_VERSION:-}" == "$version" ]]; then
+    return 0
+  else
+    set +e
+    setup="$(dev_find_ros_setup "$version" 2>/tmp/dev_ros_setup_candidates.$$)"
+    rc=$?
+    set -e
+    if [[ "$rc" -eq 2 ]]; then
+      echo "Multiple ROS$version installations found:" >&2
+      sed 's/^/  /' /tmp/dev_ros_setup_candidates.$$ >&2 || true
+      rm -f /tmp/dev_ros_setup_candidates.$$
+      dev_die "set DEV_ROS_SETUP or DEV_ROS_DISTRO in the profile"
+    fi
+    rm -f /tmp/dev_ros_setup_candidates.$$
+    [[ -n "$setup" ]] ||
+      dev_die "no ROS$version environment is active and no matching /opt/ros/* setup was found"
+  fi
+
+  if [[ -n "${ROS_VERSION:-}" && "${ROS_VERSION:-}" != "$version" ]]; then
+    echo "Switching ROS environment: ROS${ROS_VERSION} -> ROS$version"
+    unset ROS_VERSION ROS_DISTRO ROS_PYTHON_VERSION ROS_ETC_DIR ROS_PACKAGE_PATH
+    unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CATKIN_SHELL
+  fi
+
+  [[ $- == *u* ]] && nounset_was=1
+  set +u
+  # shellcheck disable=SC1090
+  source "$setup"
+  [[ "$nounset_was" -eq 1 ]] && set -u
+
+  [[ "${ROS_VERSION:-}" == "$version" ]] ||
+    dev_die "failed to activate ROS$version from: $setup"
+}
+
+dev_builder_auto() {
+  local requested="${1:-auto}"
+  local ros_version="${2:-1}"
+
+  case "$requested" in
+    auto)
+      if [[ "$ros_version" == "2" ]]; then
+        command -v colcon >/dev/null 2>&1 || dev_die "colcon not found for ROS2"
+        echo colcon
+      elif command -v catkin >/dev/null 2>&1; then
+        echo catkin
+      elif command -v catkin_make >/dev/null 2>&1; then
+        echo catkin_make
+      else
+        dev_die "neither catkin nor catkin_make found for ROS1"
+      fi
+      ;;
+    catkin|catkin_make)
+      [[ "$ros_version" == "1" ]] || dev_die "$requested is only valid for ROS1"
+      command -v "$requested" >/dev/null 2>&1 || dev_die "$requested requested but not installed"
+      echo "$requested"
+      ;;
+    colcon)
+      [[ "$ros_version" == "2" ]] || dev_die "colcon is only valid for ROS2 in dev-ros-check"
+      command -v colcon >/dev/null 2>&1 || dev_die "colcon requested but not installed"
+      echo colcon
+      ;;
+    *)
+      dev_die "builder must be auto, catkin, catkin_make, or colcon"
+      ;;
+  esac
+}

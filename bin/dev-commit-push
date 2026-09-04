@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SELF_DIR/dev-common"
+
+REPO=""
+PROFILE=""
+MESSAGE=""
+BODY=""
+BASE="HEAD"
+NO_PUSH=0
+ROS=0
+ROS_TEST=0
+GIT_PROFILE=""
+extra_ros=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    --message) MESSAGE="$2"; shift 2 ;;
+    --body) BODY="$2"; shift 2 ;;
+    --base) BASE="$2"; shift 2 ;;
+    --git-profile) GIT_PROFILE="$2"; shift 2 ;;
+    --no-push) NO_PUSH=1; shift ;;
+    --ros) ROS=1; shift ;;
+    --ros-test) ROS=1; ROS_TEST=1; shift ;;
+    --workspace|--package|--builder|--jobs)
+      extra_ros+=("$1" "$2"); shift 2 ;;
+    -h|--help)
+      echo "Usage: dev-commit-push --message TEXT [--repo PATH] [--profile NAME] [--git-profile IDENTITY] [--no-push] [--ros|--ros-test]"
+      exit 0 ;;
+    *) dev_die "unknown argument: $1" ;;
+  esac
+done
+
+[[ -n "$MESSAGE" ]] || dev_die "--message required"
+dev_load_profile "$PROFILE"
+ROOT="$(dev_resolve_repo "$REPO")"
+identity="$(dev_resolve_git_profile_name "$GIT_PROFILE")"
+push_remote="origin"
+if [[ -n "$identity" ]]; then
+  dev_load_git_profile "$identity"
+  push_remote="${DEV_GIT_REMOTE:-origin}"
+fi
+
+if git -C "$ROOT" diff --cached --quiet; then
+  dev_die "no staged changes; stage exact files first"
+fi
+
+args=(--repo "$ROOT" --base "$BASE" --check-format)
+[[ -n "$PROFILE" ]] && args+=(--profile "$PROFILE")
+[[ -n "$GIT_PROFILE" ]] && args+=(--git-profile "$GIT_PROFILE")
+[[ "$ROS" -eq 1 ]] && args+=(--ros)
+[[ "$ROS_TEST" -eq 1 ]] && args+=(--ros-test)
+args+=("${extra_ros[@]}")
+"$SELF_DIR/dev-precheck" "${args[@]}"
+
+dev_section "Staged changes"
+git -C "$ROOT" diff --cached --check
+git -C "$ROOT" diff --cached --name-only
+echo
+git -C "$ROOT" diff --cached --stat
+
+if [[ -n "$BODY" ]]; then
+  git -C "$ROOT" commit -m "$MESSAGE" -m "$BODY"
+else
+  git -C "$ROOT" commit -m "$MESSAGE"
+fi
+
+if [[ "$NO_PUSH" -eq 0 ]]; then
+  branch="$(git -C "$ROOT" branch --show-current)"
+  [[ -n "$branch" ]] || dev_die "detached HEAD; commit created but push skipped"
+  git -C "$ROOT" push -u "$push_remote" "$branch"
+fi
+
+git -C "$ROOT" log -1 --oneline --decorate

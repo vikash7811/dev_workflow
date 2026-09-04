@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SELF_DIR/dev-common"
+
+REPO=""
+PROFILE=""
+BASE="HEAD"
+CHECK_FORMAT=0
+SKIP_TESTS=0
+ROS_MODE="auto"
+ROS_TEST=0
+GIT_PROFILE=""
+extra_ros=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    --base) BASE="$2"; shift 2 ;;
+    --git-profile) GIT_PROFILE="$2"; shift 2 ;;
+    --check-format) CHECK_FORMAT=1; shift ;;
+    --skip-tests) SKIP_TESTS=1; shift ;;
+    --ros) ROS_MODE="on"; shift ;;
+    --no-ros) ROS_MODE="off"; shift ;;
+    --ros-test) ROS_MODE="on"; ROS_TEST=1; shift ;;
+    --workspace|--package|--builder|--jobs|--ros-version|--ros-distro|--ros-setup)
+      extra_ros+=("$1" "$2"); shift 2 ;;
+    -h|--help)
+      echo "Usage: dev-precheck [--repo PATH] [--profile NAME] [--git-profile IDENTITY] [--base REV] [--check-format] [--ros|--no-ros|--ros-test]"
+      exit 0 ;;
+    *) dev_die "unknown argument: $1" ;;
+  esac
+done
+
+dev_load_profile "$PROFILE"
+ROOT="$(dev_resolve_repo "$REPO")"
+
+git_check=(--repo "$ROOT")
+[[ -n "$PROFILE" ]] && git_check+=(--profile "$PROFILE")
+[[ -n "$GIT_PROFILE" ]] && git_check+=(--git-profile "$GIT_PROFILE")
+"$SELF_DIR/dev-git-check" "${git_check[@]}"
+
+IS_ROS_REPO=0
+dev_repo_has_ros "$ROOT" && IS_ROS_REPO=1
+
+"$SELF_DIR/dev-hygiene" --repo "$ROOT"
+
+fmt=(--repo "$ROOT" --base "$BASE")
+[[ -n "$PROFILE" ]] && fmt+=(--profile "$PROFILE")
+[[ "$CHECK_FORMAT" -eq 1 ]] && fmt+=(--check)
+"$SELF_DIR/dev-format" "${fmt[@]}"
+
+AUTO_ROS_TEST=0
+if [[ "$SKIP_TESTS" -eq 0 ]]; then
+  if [[ -f "$ROOT/CMakeLists.txt" ]] &&
+    { [[ "$IS_ROS_REPO" -eq 0 ]] || [[ -n "${DEV_CMAKE_TEST_FLAG:-}" ]] || [[ "${DEV_STANDALONE_TESTS:-0}" == "1" ]]; }; then
+    tst=(--repo "$ROOT")
+    [[ -n "$PROFILE" ]] && tst+=(--profile "$PROFILE")
+    "$SELF_DIR/dev-test" "${tst[@]}"
+  elif [[ "$IS_ROS_REPO" -eq 1 ]]; then
+    echo "Skipping standalone CMake tests; ROS package tests will run through dev-ros-check."
+    AUTO_ROS_TEST=1
+  else
+    echo "Skipping standalone tests: no top-level CMakeLists.txt."
+  fi
+fi
+
+git -C "$ROOT" diff --check
+git -C "$ROOT" diff --cached --check
+
+RUN_ROS=0
+case "$ROS_MODE" in
+  on) RUN_ROS=1 ;;
+  off) RUN_ROS=0 ;;
+  auto) [[ "$IS_ROS_REPO" -eq 1 ]] && RUN_ROS=1 ;;
+esac
+
+if [[ "$RUN_ROS" -eq 1 ]]; then
+  ros=(--repo "$ROOT")
+  [[ -n "$PROFILE" ]] && ros+=(--profile "$PROFILE")
+  ros+=("${extra_ros[@]}")
+  if [[ "$ROS_TEST" -eq 1 || "$AUTO_ROS_TEST" -eq 1 ]]; then
+    ros+=(--test)
+  fi
+  "$SELF_DIR/dev-ros-check" "${ros[@]}"
+fi
+
+echo
+echo "PRECHECK PASSED"

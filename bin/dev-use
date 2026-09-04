@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SELF_DIR/dev-common"
+
+usage() {
+  cat <<'USAGE'
+Select the default development profile used by dev-workflow commands.
+
+Usage:
+  dev-use PROFILE
+  dev-use --show
+  dev-use --list
+  dev-use --clear
+
+Examples:
+  dev-use ros1_project
+  dev-use ros2_project
+  dev-use --show
+
+The selected profile is stored outside project repositories under:
+  ${XDG_CONFIG_HOME:-$HOME/.config}/dev-workflow/active_profile
+
+Explicit --profile, --repo, --workspace, --package and --builder options on
+individual commands always override the active profile.
+USAGE
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  --list)
+    home="$(dev_home)"
+    shopt -s nullglob
+    profiles=("$home"/profiles/*.conf)
+    if [[ "${#profiles[@]}" -eq 0 ]]; then
+      echo "No profiles found in: $home/profiles"
+      exit 0
+    fi
+    active="$(dev_get_active_profile 2>/dev/null || true)"
+    for path in "${profiles[@]}"; do
+      name="$(basename "$path" .conf)"
+      if [[ "$name" == "$active" ]]; then
+        printf '* %s\n' "$name"
+      else
+        printf '  %s\n' "$name"
+      fi
+    done
+    exit 0
+    ;;
+  --show|"")
+    profile="$(dev_get_active_profile 2>/dev/null || true)"
+    if [[ -z "$profile" ]]; then
+      echo "No active profile selected."
+      echo "Use: dev-use --list"
+      exit 0
+    fi
+    dev_load_profile "$profile"
+    echo "Profile    : $profile"
+    echo "Repository : ${DEV_REPO:-<current Git repository>}"
+    echo "Workspace  : ${DEV_ROS_WORKSPACE:-<auto-detect>}"
+    echo "ROS version: ${DEV_ROS_VERSION:-auto}"
+    echo "ROS setup  : ${DEV_ROS_SETUP:-<auto-detect>}"
+    echo "ROS package: ${DEV_ROS_PACKAGES:-${DEV_ROS_PACKAGE:-<auto-detect>}}"
+    echo "Builder    : ${DEV_ROS_BUILDER:-auto}"
+    echo "Git profile: ${DEV_GIT_PROFILE:-$(dev_get_active_git_profile 2>/dev/null || echo "<none>")}"
+    exit 0
+    ;;
+  --clear)
+    old="$(dev_get_active_profile 2>/dev/null || true)"
+    dev_clear_active_profile
+    if [[ -n "$old" ]]; then
+      echo "Cleared active profile: $old"
+    else
+      echo "No active profile was selected."
+    fi
+    exit 0
+    ;;
+  --*)
+    dev_die "unknown option: $1"
+    ;;
+  *)
+    [[ $# -eq 1 ]] || dev_die "usage: dev-use PROFILE"
+    dev_set_active_profile "$1"
+    echo "Active profile: $1"
+    dev_load_profile "$1"
+    echo "Repository    : ${DEV_REPO:-<current Git repository>}"
+    echo "Workspace     : ${DEV_ROS_WORKSPACE:-<auto-detect>}"
+    echo "ROS version   : ${DEV_ROS_VERSION:-auto}"
+    echo "ROS setup     : ${DEV_ROS_SETUP:-<auto-detect>}"
+    echo "ROS package   : ${DEV_ROS_PACKAGES:-${DEV_ROS_PACKAGE:-<auto-detect>}}"
+    echo "Builder       : ${DEV_ROS_BUILDER:-auto}"
+    echo "Git profile   : ${DEV_GIT_PROFILE:-$(dev_get_active_git_profile 2>/dev/null || echo "<none>")}"
+    ;;
+esac

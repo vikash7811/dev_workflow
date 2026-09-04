@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SELF_DIR/dev-common"
+
+REPO=""
+PROFILE=""
+BASE=""
+FIX_FORMAT=0
+ROS_MODE="auto"
+ROS_TEST=0
+GIT_PROFILE=""
+extra_ros=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    --base) BASE="$2"; shift 2 ;;
+    --git-profile) GIT_PROFILE="$2"; shift 2 ;;
+    --fix-format) FIX_FORMAT=1; shift ;;
+    --ros) ROS_MODE="on"; shift ;;
+    --no-ros) ROS_MODE="off"; shift ;;
+    --ros-test) ROS_MODE="on"; ROS_TEST=1; shift ;;
+    --workspace|--package|--builder|--jobs|--ros-version|--ros-distro|--ros-setup)
+      extra_ros+=("$1" "$2"); shift 2 ;;
+    -h|--help)
+      echo "Usage: dev-validate --base REF [--repo PATH] [--profile NAME] [--git-profile IDENTITY] [--ros|--no-ros|--ros-test]"
+      exit 0 ;;
+    *) dev_die "unknown argument: $1" ;;
+  esac
+done
+
+[[ -n "$BASE" ]] || dev_die "--base required"
+dev_load_profile "$PROFILE"
+ROOT="$(dev_resolve_repo "$REPO")"
+git -C "$ROOT" rev-parse --verify "${BASE}^{commit}" >/dev/null 2>&1 ||
+  dev_die "base is not a local Git ref: $BASE"
+
+MERGE_BASE="$(git -C "$ROOT" merge-base HEAD "$BASE")"
+echo "Base ref   : $BASE"
+echo "Merge-base : $MERGE_BASE"
+
+args=(--repo "$ROOT" --base "$MERGE_BASE")
+[[ -n "$PROFILE" ]] && args+=(--profile "$PROFILE")
+[[ -n "$GIT_PROFILE" ]] && args+=(--git-profile "$GIT_PROFILE")
+[[ "$FIX_FORMAT" -eq 0 ]] && args+=(--check-format)
+case "$ROS_MODE" in
+  on) args+=(--ros) ;;
+  off) args+=(--no-ros) ;;
+esac
+[[ "$ROS_TEST" -eq 1 ]] && args+=(--ros-test)
+args+=("${extra_ros[@]}")
+exec "$SELF_DIR/dev-precheck" "${args[@]}"

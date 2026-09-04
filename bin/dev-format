@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SELF_DIR/dev-common"
+
+REPO=""
+PROFILE=""
+BASE="HEAD"
+CHECK=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    --base) BASE="$2"; shift 2 ;;
+    --check) CHECK=1; shift ;;
+    -h|--help)
+      echo "Usage: dev-format [--repo PATH] [--profile NAME] [--base REV] [--check]"
+      exit 0 ;;
+    *) dev_die "unknown argument: $1" ;;
+  esac
+done
+
+dev_load_profile "$PROFILE"
+ROOT="$(dev_resolve_repo "$REPO")"
+cd "$ROOT"
+
+CPP_FORMATTER="${DEV_CPP_FORMATTER:-git-clang-format-14}"
+CPP_EXT="${DEV_CPP_EXTENSIONS:-c,cc,cpp,cxx,h,hh,hpp,hxx}"
+PY_FORMATTER="${DEV_PYTHON_FORMATTER:-darker}"
+
+git rev-parse --verify "${BASE}^{commit}" >/dev/null 2>&1 ||
+  dev_die "base is not a commit/ref: $BASE"
+
+dev_section "C/C++ changed-line formatting"
+if command -v "$CPP_FORMATTER" >/dev/null 2>&1; then
+  if [[ "$CHECK" -eq 1 ]]; then
+    set +e
+    out="$("$CPP_FORMATTER" --diff --style=file --extensions="$CPP_EXT" "$BASE" 2>&1)"
+    status=$?
+    set -e
+
+    if [[ "$status" -ne 0 ]]; then
+      [[ -n "$out" ]] && printf '%s\n' "$out"
+      dev_die "C/C++ formatter failed"
+    fi
+
+    if [[ -n "$out" &&
+          "$out" != "clang-format did not modify any files" &&
+          "$out" != "no modified files to format" ]]; then
+      printf '%s\n' "$out"
+      dev_die "C/C++ formatting check failed"
+    fi
+  else
+    "$CPP_FORMATTER" --style=file --extensions="$CPP_EXT" "$BASE"
+  fi
+else
+  dev_die "$CPP_FORMATTER not found"
+fi
+echo "PASS"
+
+dev_section "Python changed-line formatting"
+if command -v "$PY_FORMATTER" >/dev/null 2>&1; then
+  if [[ "$CHECK" -eq 1 ]]; then
+    "$PY_FORMATTER" --check --diff --revision "$BASE" .
+  else
+    "$PY_FORMATTER" --revision "$BASE" .
+  fi
+else
+  echo "SKIP: $PY_FORMATTER not installed"
+fi
+
+git diff --check

@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SELF_DIR/dev-common"
+
+REPO=""
+PROFILE=""
+WORKSPACE=""
+BUILDER=""
+ROS_VERSION_REQUEST=""
+ROS_DISTRO_REQUEST=""
+ROS_SETUP=""
+RUN_TEST=0
+JOBS="$(dev_jobs)"
+PACKAGE_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    --workspace) WORKSPACE="$2"; shift 2 ;;
+    --package) PACKAGE_ARGS+=("$2"); shift 2 ;;
+    --builder) BUILDER="$2"; shift 2 ;;
+    --ros-version) ROS_VERSION_REQUEST="$2"; shift 2 ;;
+    --ros-distro) ROS_DISTRO_REQUEST="$2"; shift 2 ;;
+    --ros-setup) ROS_SETUP="$2"; shift 2 ;;
+    --test) RUN_TEST=1; shift ;;
+    --jobs) JOBS="$2"; shift 2 ;;
+    -h|--help)
+      cat <<'USAGE'
+Usage: dev-ros-check [options]
+
+Options:
+  --repo PATH
+  --profile NAME
+  --workspace PATH
+  --package NAME        May be repeated. Auto-detected when omitted.
+  --builder NAME        auto|catkin|catkin_make|colcon
+  --ros-version N       auto|1|2
+  --ros-distro NAME     e.g. noetic or humble
+  --ros-setup PATH      explicit setup.bash to source
+  --test                run package-scoped ROS tests
+  --jobs N
+USAGE
+      exit 0 ;;
+    *) dev_die "unknown argument: $1" ;;
+  esac
+done
+
+dev_load_profile "$PROFILE"
+ROOT="$(dev_resolve_repo "$REPO")"
+WORKSPACE="${WORKSPACE:-${DEV_ROS_WORKSPACE:-}}"
+BUILDER="${BUILDER:-${DEV_ROS_BUILDER:-auto}}"
+ROS_VERSION_REQUEST="${ROS_VERSION_REQUEST:-${DEV_ROS_VERSION:-auto}}"
+ROS_DISTRO_REQUEST="${ROS_DISTRO_REQUEST:-${DEV_ROS_DISTRO:-}}"
+ROS_SETUP="${ROS_SETUP:-${DEV_ROS_SETUP:-}}"
+
+case "$ROS_VERSION_REQUEST" in
+  auto)
+    detected_version="$(dev_detect_ros_version "$ROOT")"
+    if [[ "$detected_version" == "mixed" ]]; then
+      dev_die "repository contains both ROS1 and ROS2 packages; set --ros-version or DEV_ROS_VERSION"
+    elif [[ "$detected_version" == "1" || "$detected_version" == "2" ]]; then
+      ROS_MAJOR="$detected_version"
+    elif [[ "${ROS_VERSION:-}" == "1" || "${ROS_VERSION:-}" == "2" ]]; then
+      ROS_MAJOR="$ROS_VERSION"
+    else
+      dev_die "unable to detect ROS version; set --ros-version or DEV_ROS_VERSION"
+    fi
+    ;;
+  1|2) ROS_MAJOR="$ROS_VERSION_REQUEST" ;;
+  *) dev_die "ROS version must be auto, 1, or 2" ;;
+esac
+
+if [[ -z "$WORKSPACE" ]]; then
+  WORKSPACE="$(dev_detect_ros_workspace "$ROOT" 2>/dev/null || true)"
+fi
+WORKSPACE="${WORKSPACE/#\~/$HOME}"
+[[ -n "$WORKSPACE" && -d "$WORKSPACE/src" ]] ||
+  dev_die "valid ROS workspace required; set DEV_ROS_WORKSPACE or use --workspace"
+
+PACKAGES=()
+if [[ "${#PACKAGE_ARGS[@]}" -gt 0 ]]; then
+  PACKAGES=("${PACKAGE_ARGS[@]}")
+elif [[ -n "${DEV_ROS_PACKAGES:-}" ]]; then
+  # shellcheck disable=SC2206
+  PACKAGES=(${DEV_ROS_PACKAGES})
+elif [[ -n "${DEV_ROS_PACKAGE:-}" ]]; then
+  PACKAGES=("$DEV_ROS_PACKAGE")
+else
+  while IFS= read -r package_xml; do
+    package_name="$(dev_ros_package_name "$package_xml")"
+    [[ -n "$package_name" ]] && PACKAGES+=("$package_name")
+  done < <(dev_find_ros_package_xmls "$ROOT")
+fi
+
+[[ "${#PACKAGES[@]}" -gt 0 ]] ||
+  dev_die "no ROS package could be detected; set DEV_ROS_PACKAGE(S) or use --package"
+
+# De-duplicate while preserving order.
+unique_packages=()
+declare -A seen_packages=()
+for package in "${PACKAGES[@]}"; do
+  [[ -n "$package" ]] || continue
+  if [[ -z "${seen_packages[$package]:-}" ]]; then
+    unique_packages+=("$package")
+    seen_packages[$package]=1
+  fi
+done
+PACKAGES=("${unique_packages[@]}")
+
+dev_activate_ros "$ROS_MAJOR" "$ROS_SETUP" "$ROS_DISTRO_REQUEST"
+BUILDER="$(dev_builder_auto "$BUILDER" "$ROS_MAJOR")"
+export PYTHONDONTWRITEBYTECODE=1
+
+echo "ROS       : ROS$ROS_MAJOR${ROS_DISTRO:+ ($ROS_DISTRO)}"
+echo "Workspace : $WORKSPACE"
+echo "Packages  : ${PACKAGES[*]}"
+echo "Builder   : $BUILDER"
+echo "Tests     : $([[ "$RUN_TEST" -eq 1 ]] && echo enabled || echo disabled)"
+
+if [[ "$ROS_MAJOR" == "1" ]]; then
+  if [[ "$BUILDER" == "catkin" ]]; then
+    catkin build --workspace "$WORKSPACE" "${PACKAGES[@]}" --no-status --jobs "$JOBS" \
+      --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DCATKIN_ENABLE_TESTING=$([[ "$RUN_TEST" -eq 1 ]] && echo ON || echo OFF)
+
+    if [[ "$RUN_TEST" -eq 1 ]]; then
+      catkin run_tests --workspace "$WORKSPACE" "${PACKAGES[@]}" --no-status
+    fi
+  else
+    (
+      cd "$WORKSPACE"
+      catkin_make --only-pkg-with-deps "${PACKAGES[@]}" \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCATKIN_ENABLE_TESTING=$([[ "$RUN_TEST" -eq 1 ]] && echo ON || echo OFF) \
+        -j"$JOBS"
+
+      if [[ "$RUN_TEST" -eq 1 ]]; then
+        for package in "${PACKAGES[@]}"; do
+          catkin_make "run_tests_${package}" -j"$JOBS"
+        done
+      fi
+    )
+  fi
+
+  if [[ "$RUN_TEST" -eq 1 ]] && command -v catkin_test_results >/dev/null 2>&1; then
+    if [[ "$BUILDER" == "catkin" ]]; then
+      for package in "${PACKAGES[@]}"; do
+        if [[ -d "$WORKSPACE/build/$package" ]]; then
+          catkin_test_results --verbose "$WORKSPACE/build/$package"
+        fi
+      done
+    else
+      catkin_test_results --verbose "$WORKSPACE/build"
+    fi
+  fi
+else
+  (
+    cd "$WORKSPACE"
+    colcon build \
+      --packages-up-to "${PACKAGES[@]}" \
+      --parallel-workers "$JOBS" \
+      --cmake-args \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DBUILD_TESTING=$([[ "$RUN_TEST" -eq 1 ]] && echo ON || echo OFF)
+
+    if [[ "$RUN_TEST" -eq 1 ]]; then
+      colcon test \
+        --packages-select "${PACKAGES[@]}" \
+        --parallel-workers "$JOBS" \
+        --event-handlers console_direct+
+      colcon test-result --verbose
+    fi
+  )
+fi
+
+echo
+echo "ROS CHECK PASSED"

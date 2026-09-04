@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SELF_DIR/dev-common"
+
+REPO=""
+PROFILE=""
+GIT_PROFILE=""
+REMOTE=""
+BRANCH=""
+REBASE=0
+PRUNE=1
+
+usage() {
+  cat <<'USAGE'
+Safely update the current repository from its configured Git remote.
+
+Usage:
+  dev-git-update [--repo PATH] [--profile PROJECT_PROFILE]
+                 [--git-profile IDENTITY] [--remote NAME]
+                 [--branch NAME] [--rebase] [--no-prune]
+
+Default behavior:
+  1. Validate configured Git author/SSH remote when an identity is configured.
+  2. Require a clean worktree and index.
+  3. Fetch the selected remote with --prune.
+  4. Fast-forward only when the remote branch is ahead.
+  5. Refuse diverged histories unless --rebase is explicitly requested.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    --git-profile) GIT_PROFILE="$2"; shift 2 ;;
+    --remote) REMOTE="$2"; shift 2 ;;
+    --branch) BRANCH="$2"; shift 2 ;;
+    --rebase) REBASE=1; shift ;;
+    --no-prune) PRUNE=0; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) dev_die "unknown argument: $1" ;;
+  esac
+done
+
+dev_load_profile "$PROFILE"
+ROOT="$(dev_resolve_repo "$REPO")"
+identity="$(dev_resolve_git_profile_name "$GIT_PROFILE")"
+if [[ -n "$identity" ]]; then
+  check=(--repo "$ROOT" --git-profile "$identity")
+  [[ -n "$PROFILE" ]] && check+=(--profile "$PROFILE")
+  [[ -n "$REMOTE" ]] && check+=(--remote "$REMOTE")
+  "$SELF_DIR/dev-git-check" "${check[@]}"
+fi
+
+if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
+  dev_die "worktree/index is not clean; commit or stash changes before updating"
+fi
+
+BRANCH="${BRANCH:-$(git -C "$ROOT" branch --show-current)}"
+[[ -n "$BRANCH" ]] || dev_die "detached HEAD; specify --branch only after checking out a local branch"
+
+if [[ -z "$REMOTE" ]]; then
+  if [[ -n "$identity" ]]; then
+    dev_load_git_profile "$identity"
+    REMOTE="${DEV_GIT_REMOTE:-origin}"
+  else
+    REMOTE="origin"
+  fi
+fi
+
+git -C "$ROOT" remote get-url "$REMOTE" >/dev/null 2>&1 || dev_die "Git remote not found: $REMOTE"
+
+fetch_args=(fetch "$REMOTE")
+[[ "$PRUNE" -eq 1 ]] && fetch_args+=(--prune)
+git -C "$ROOT" "${fetch_args[@]}"
+
+remote_ref="refs/remotes/$REMOTE/$BRANCH"
+git -C "$ROOT" show-ref --verify --quiet "$remote_ref" ||
+  dev_die "remote branch not found after fetch: $REMOTE/$BRANCH"
+
+read -r ahead behind < <(git -C "$ROOT" rev-list --left-right --count "HEAD...$REMOTE/$BRANCH")
+echo "Branch      : $BRANCH"
+echo "Remote      : $REMOTE/$BRANCH"
+echo "Ahead/behind: $ahead/$behind"
+
+if [[ "$behind" -eq 0 ]]; then
+  echo "UP TO DATE"
+  exit 0
+fi
+
+if [[ "$ahead" -gt 0 && "$REBASE" -eq 0 ]]; then
+  dev_die "local and remote histories diverged; rerun with --rebase after reviewing the branch"
+fi
+
+if [[ "$REBASE" -eq 1 ]]; then
+  git -C "$ROOT" rebase "$REMOTE/$BRANCH"
+  echo "UPDATED: rebased onto $REMOTE/$BRANCH"
+else
+  git -C "$ROOT" merge --ff-only "$REMOTE/$BRANCH"
+  echo "UPDATED: fast-forwarded to $REMOTE/$BRANCH"
+fi
