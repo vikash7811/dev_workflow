@@ -34,6 +34,9 @@ DEV_ROS_BUILDER="auto"                    # catkin/catkin_make/colcon
 # Optional per-user Git identity reference
 DEV_GIT_PROFILE="personal"
 
+# Optional validation base override for non-standard integration branches
+DEV_VALIDATE_BASE="origin/develop"
+
 # Optional Docker reproduction image
 DEV_DOCKER_IMAGE="your-registry/ros1-build-image:tag"
 ```
@@ -90,3 +93,53 @@ Git identity resolution priority:
 1. `--git-profile`;
 2. `DEV_GIT_PROFILE` in the project profile;
 3. active identity selected with `dev-git-config use`.
+
+## User-local project profiles
+
+Real project profiles should normally be created with `dev-profile-config` and are stored at:
+
+```text
+${XDG_CONFIG_HOME:-$HOME/.config}/dev-workflow/profiles/NAME.conf
+```
+
+User-local profiles take precedence over bundled profiles with the same name. The repository's
+`profiles/example.conf` is a template only. This keeps machine-specific paths and private project
+names out of the public dev-workflow repository.
+
+Example:
+
+```bash
+dev-profile-config set my_project \
+  --repo ~/ws/src/my_project \
+  --workspace ~/ws \
+  --ros-version 2 \
+  --ros-setup /opt/ros/humble/setup.bash \
+  --git-profile work
+
+dev-use my_project
+```
+
+## User-local project profiles
+
+Real project profiles should normally be created with `dev-profile-config` and are stored at:
+
+```text
+${XDG_CONFIG_HOME:-$HOME/.config}/dev-workflow/profiles/NAME.conf
+```
+
+User-local profiles take precedence over bundled profiles with the same name. The repository's
+`profiles/example.conf` is a template only. This keeps machine-specific paths and private project
+names out of the public dev-workflow repository.
+
+Example:
+
+```bash
+dev-profile-config set my_project \
+  --repo ~/ws/src/my_project \
+  --workspace ~/ws \
+  --ros-version 2 \
+  --ros-setup /opt/ros/humble/setup.bash \
+  --git-profile work
+
+dev-use my_project
+```

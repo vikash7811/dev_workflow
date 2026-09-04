@@ -25,20 +25,59 @@ while [[ $# -gt 0 ]]; do
     --workspace|--package|--builder|--jobs|--ros-version|--ros-distro|--ros-setup)
       extra_ros+=("$1" "$2"); shift 2 ;;
     -h|--help)
-      echo "Usage: dev-validate --base REF [--repo PATH] [--profile NAME] [--git-profile IDENTITY] [--ros|--no-ros|--ros-test]"
+      echo "Usage: dev-validate [--base REF] [--repo PATH] [--profile NAME] [--git-profile IDENTITY] [--ros|--no-ros|--ros-test]"
       exit 0 ;;
     *) dev_die "unknown argument: $1" ;;
   esac
 done
 
-[[ -n "$BASE" ]] || dev_die "--base required"
 dev_load_profile "$PROFILE"
 ROOT="$(dev_resolve_repo "$REPO")"
+
+BASE_SOURCE="explicit --base"
+if [[ -z "$BASE" ]]; then
+  BASE_SOURCE="auto"
+
+  if [[ -n "${DEV_VALIDATE_BASE:-}" ]]; then
+    BASE="$DEV_VALIDATE_BASE"
+    BASE_SOURCE="profile DEV_VALIDATE_BASE"
+  else
+    identity="$(dev_resolve_git_profile_name "$GIT_PROFILE")"
+    remote="origin"
+    if [[ -n "$identity" ]]; then
+      dev_load_git_profile "$identity"
+      remote="${DEV_GIT_REMOTE:-origin}"
+    fi
+
+    remote_head="$(git -C "$ROOT" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
+    upstream="$(git -C "$ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+
+    candidates=()
+    [[ -n "$remote_head" ]] && candidates+=("$remote_head|remote default branch")
+    candidates+=("$remote/main|remote main" "$remote/master|remote master" "main|local main" "master|local master")
+    [[ -n "$upstream" ]] && candidates+=("$upstream|tracking upstream")
+    candidates+=("HEAD|current HEAD fallback")
+
+    candidate=""
+    source=""
+    for entry in "${candidates[@]}"; do
+      candidate="${entry%%|*}"
+      source="${entry#*|}"
+      if git -C "$ROOT" rev-parse --verify "${candidate}^{commit}" >/dev/null 2>&1; then
+        BASE="$candidate"
+        BASE_SOURCE="auto: $source"
+        break
+      fi
+    done
+  fi
+fi
+
 git -C "$ROOT" rev-parse --verify "${BASE}^{commit}" >/dev/null 2>&1 ||
   dev_die "base is not a local Git ref: $BASE"
 
 MERGE_BASE="$(git -C "$ROOT" merge-base HEAD "$BASE")"
 echo "Base ref   : $BASE"
+echo "Base source: $BASE_SOURCE"
 echo "Merge-base : $MERGE_BASE"
 
 args=(--repo "$ROOT" --base "$MERGE_BASE")

@@ -100,6 +100,10 @@ dev_expand_user_path() {
   printf '%s\n' "$value"
 }
 
+dev_project_profiles_dir() {
+  printf '%s/profiles\n' "$(dev_config_dir)"
+}
+
 dev_active_profile_file() {
   printf '%s/active_profile\n' "$(dev_config_dir)"
 }
@@ -108,11 +112,16 @@ dev_profile_path() {
   local name="${1:-}"
   [[ -n "$name" ]] || return 1
 
-  local home
+  local home user_dir
   home="$(dev_home)"
+  user_dir="$(dev_project_profiles_dir)"
 
   if [[ -f "$name" ]]; then
     printf '%s\n' "$(cd "$(dirname "$name")" && pwd)/$(basename "$name")"
+  elif [[ -f "$user_dir/$name" ]]; then
+    printf '%s\n' "$user_dir/$name"
+  elif [[ -f "$user_dir/$name.conf" ]]; then
+    printf '%s\n' "$user_dir/$name.conf"
   elif [[ -f "$home/profiles/$name" ]]; then
     printf '%s\n' "$home/profiles/$name"
   elif [[ -f "$home/profiles/$name.conf" ]]; then

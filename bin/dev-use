@@ -13,6 +13,9 @@ Usage:
   dev-use --list
   dev-use --clear
 
+Project profiles are user-local by default. Configure them with:
+  dev-profile-config set NAME --repo PATH [options]
+
 Examples:
   dev-use ros1_project
   dev-use ros2_project
@@ -33,15 +36,31 @@ case "${1:-}" in
     ;;
   --list)
     home="$(dev_home)"
+    user_dir="$(dev_project_profiles_dir)"
     shopt -s nullglob
-    profiles=("$home"/profiles/*.conf)
-    if [[ "${#profiles[@]}" -eq 0 ]]; then
-      echo "No profiles found in: $home/profiles"
+    user_profiles=("$user_dir"/*.conf)
+    bundled_profiles=("$home"/profiles/*.conf)
+    shopt -u nullglob
+
+    declare -A seen=()
+    names=()
+    for path in "${user_profiles[@]}" "${bundled_profiles[@]}"; do
+      [[ -f "$path" ]] || continue
+      name="$(basename "$path" .conf)"
+      [[ -n "${seen[$name]:-}" ]] && continue
+      seen[$name]=1
+      names+=("$name")
+    done
+
+    if [[ "${#names[@]}" -eq 0 ]]; then
+      echo "No profiles found."
+      echo "Create one with: dev-profile-config set NAME --repo PATH"
       exit 0
     fi
+
+    mapfile -t names < <(printf '%s\n' "${names[@]}" | sort)
     active="$(dev_get_active_profile 2>/dev/null || true)"
-    for path in "${profiles[@]}"; do
-      name="$(basename "$path" .conf)"
+    for name in "${names[@]}"; do
       if [[ "$name" == "$active" ]]; then
         printf '* %s\n' "$name"
       else

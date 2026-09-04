@@ -15,7 +15,7 @@ Then normal commands no longer need repeated repository/workspace arguments:
 dev-git-update
 dev-precheck
 dev-ros-check --test
-dev-validate --base origin/main
+dev-validate
 ```
 
 ## Configure user Git identity once
@@ -135,10 +135,14 @@ permanently change the parent shell.
 ## Before push / PR
 
 ```bash
-dev-validate --base origin/main
+dev-validate
 ```
 
-`dev-validate` inherits Git identity validation and automatic ROS checking.
+`dev-validate` inherits Git identity validation and automatic ROS checking. It automatically
+selects a comparison base from the configured remote's default branch (then `main`/`master`,
+local default branches, tracking upstream, or `HEAD` for a new repository). Use `--base REF`
+when you want an explicit comparison target. A project profile may set `DEV_VALIDATE_BASE`
+when a repository has a non-standard integration branch.
 
 `dev-commit-push` runs the same precheck before creating the commit. A configured Git
 identity therefore blocks commit/push when the repository author, remote alias, or SSH
@@ -149,3 +153,23 @@ key routing is inconsistent.
 `dev-docker-check` is an optional ROS1 Docker reproduction path. It has no baked-in
 organization-specific image. Configure `DEV_DOCKER_IMAGE` in a project profile or pass
 `--image` explicitly.
+
+## Project profile configuration
+
+Use `dev-profile-config` for machine/user-specific project profiles instead of committing real
+paths to `profiles/` in this repository. Profiles are stored under
+`${XDG_CONFIG_HOME:-$HOME/.config}/dev-workflow/profiles/` and selected with `dev-use`.
+
+`dev-use` persists only the selected profile name. Other `dev-*` commands load that profile on
+each invocation, so `DEV_REPO`, `DEV_ROS_WORKSPACE`, and ROS variables do not need to be exported
+into the parent shell.
+
+## Project profile configuration
+
+Use `dev-profile-config` for machine/user-specific project profiles instead of committing real
+paths to `profiles/` in this repository. Profiles are stored under
+`${XDG_CONFIG_HOME:-$HOME/.config}/dev-workflow/profiles/` and selected with `dev-use`.
+
+`dev-use` persists only the selected profile name. Other `dev-*` commands load that profile on
+each invocation, so `DEV_REPO`, `DEV_ROS_WORKSPACE`, and ROS variables do not need to be exported
+into the parent shell.

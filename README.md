@@ -56,22 +56,24 @@ command -v dev-use -> /home/<user>/dev_workflow/bin/dev-use
 
 ## Configure a project profile
 
-Copy the example and edit it:
+Project profiles are user-specific and should normally live outside this repository under:
 
-```bash
-cp "$DEV_WORKFLOW_HOME/profiles/example.conf" \
-   "$DEV_WORKFLOW_HOME/profiles/my_project.conf"
+```text
+${XDG_CONFIG_HOME:-$HOME/.config}/dev-workflow/profiles/
 ```
 
-Typical project settings:
+Create or update them with `dev-profile-config`:
 
 ```bash
-DEV_REPO="$HOME/ws/src/my_project"
-DEV_ROS_WORKSPACE="$HOME/ws"
-DEV_ROS_VERSION="2"
-DEV_ROS_SETUP="/opt/ros/humble/setup.bash"
-DEV_ROS_BUILDER="auto"
-DEV_GIT_PROFILE="personal"
+dev-profile-config set my_project \
+  --repo ~/ws/src/my_project \
+  --workspace ~/ws \
+  --ros-version 2 \
+  --ros-setup /opt/ros/humble/setup.bash \
+  --git-profile personal
+
+dev-profile-config list
+dev-profile-config show my_project
 ```
 
 Select it once:
@@ -81,7 +83,11 @@ dev-use my_project
 dev-use --show
 ```
 
-The selected project profile is stored at:
+`profiles/example.conf` is a reference template only. Keeping real project paths in
+per-user configuration prevents machine-specific or private paths from leaking into the
+public dev-workflow repository.
+
+The selected project profile name is stored at:
 
 ```text
 ${XDG_CONFIG_HOME:-$HOME/.config}/dev-workflow/active_profile
@@ -269,6 +275,7 @@ When a Git identity is configured, `dev-precheck`, `dev-validate`, `dev-git-upda
 | Command | Purpose |
 |---|---|
 | `dev-use` | Select/show/switch the active project profile |
+| `dev-profile-config` | Create/update/list user-local project profiles |
 | `dev-git-config` | Create/select/show user Git identity profiles |
 | `dev-git-check` | Validate Git author, remote SSH alias, and configured key |
 | `dev-git-update` | Fetch and safely fast-forward/rebase a branch |
