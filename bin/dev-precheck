@@ -51,7 +51,10 @@ fmt=(--repo "$ROOT" --base "$BASE")
 [[ "$CHECK_FORMAT" -eq 1 ]] && fmt+=(--check)
 "$SELF_DIR/dev-format" "${fmt[@]}"
 
-AUTO_ROS_TEST=0
+if [[ "$SKIP_TESTS" -eq 1 && "$ROS_TEST" -eq 1 ]]; then
+  dev_die "--skip-tests and --ros-test cannot be used together"
+fi
+
 if [[ "$SKIP_TESTS" -eq 0 ]]; then
   if [[ -f "$ROOT/CMakeLists.txt" ]] &&
     { [[ "$IS_ROS_REPO" -eq 0 ]] || [[ -n "${DEV_CMAKE_TEST_FLAG:-}" ]] || [[ "${DEV_STANDALONE_TESTS:-0}" == "1" ]]; }; then
@@ -59,8 +62,7 @@ if [[ "$SKIP_TESTS" -eq 0 ]]; then
     [[ -n "$PROFILE" ]] && tst+=(--profile "$PROFILE")
     "$SELF_DIR/dev-test" "${tst[@]}"
   elif [[ "$IS_ROS_REPO" -eq 1 ]]; then
-    echo "Skipping standalone CMake tests; ROS package tests will run through dev-ros-check."
-    AUTO_ROS_TEST=1
+    echo "Skipping standalone CMake tests; ROS package tests are disabled unless --ros-test is requested."
   else
     echo "Skipping standalone tests: no top-level CMakeLists.txt."
   fi
@@ -80,7 +82,7 @@ if [[ "$RUN_ROS" -eq 1 ]]; then
   ros=(--repo "$ROOT")
   [[ -n "$PROFILE" ]] && ros+=(--profile "$PROFILE")
   ros+=("${extra_ros[@]}")
-  if [[ "$ROS_TEST" -eq 1 || "$AUTO_ROS_TEST" -eq 1 ]]; then
+  if [[ "$ROS_TEST" -eq 1 ]]; then
     ros+=(--test)
   fi
   "$SELF_DIR/dev-ros-check" "${ros[@]}"

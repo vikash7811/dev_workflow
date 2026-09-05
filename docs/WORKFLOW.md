@@ -86,13 +86,14 @@ dev-commit-push --message "..."
 5. standalone CMake tests when configured;
 6. working-tree and staged whitespace checks;
 7. automatic ROS1/ROS2 package build for repositories containing `package.xml`;
-8. ROS package tests automatically when no standalone CMake test path exists.
+8. ROS package tests only when `--ros-test` is explicitly requested.
 
 If no Git identity profile is configured, the Git identity check reports `SKIP` and the
 rest of the workflow remains usable.
 
-Use `--skip-tests` to suppress tests while keeping the ROS build. Use `--no-ros` to
-intentionally suppress the automatic ROS build.
+ROS package tests are opt-in: use `--ros-test` when they are intentionally required.
+Use `--skip-tests` to suppress standalone tests while keeping the ROS build. Use
+`--no-ros` to intentionally suppress the automatic ROS build.
 
 ## ROS auto-detection
 

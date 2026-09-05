@@ -49,7 +49,8 @@ If workspace is empty, the tool walks upward looking for the workspace whose `sr
 directory contains the repository.
 
 For a pure ROS repository, standalone CMake tests are skipped unless explicitly
-configured. ROS package tests then run through `dev-ros-check` automatically. Set:
+configured. The ROS build still runs automatically, but ROS package tests are opt-in
+and run only when `--ros-test` is supplied. Set:
 
 ```bash
 DEV_STANDALONE_TESTS=1

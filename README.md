@@ -240,14 +240,18 @@ Use `--no-ros` only when intentionally suppressing the automatic ROS build:
 dev-precheck --no-ros
 ```
 
-Use `--ros-test` to force ROS package tests when standalone tests are also configured:
+ROS package tests are opt-in. A normal `dev-precheck` or `dev-validate` performs the
+ROS build without enabling package tests. Use `--ros-test` only when the ROS test path
+is intentionally requested:
 
 ```bash
 dev-precheck --ros-test
+dev-validate --ros-test
 ```
 
-For pure ROS repositories without a standalone top-level CMake test path,
-`dev-precheck` automatically runs package tests through catkin/colcon.
+For pure ROS repositories without a standalone top-level CMake test path, the
+standalone test step is skipped and the ROS build still runs. Package tests remain
+disabled unless `--ros-test` is supplied.
 
 ## Normal development cycle
 
