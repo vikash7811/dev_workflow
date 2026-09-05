@@ -308,4 +308,11 @@ DEV_DOCKER_IMAGE="your-registry/ros1-build-image:tag"
 dev-docker-check --image your-registry/ros1-build-image:tag
 ```
 
-See `docs/WORKFLOW.md` and `docs/PROFILE_REFERENCE.md` for details.
+## Practical setup examples
+
+For end-to-end examples covering generic repositories, native ROS2/colcon, native
+ROS1/catkin, Docker/catkin builds, Git identity profiles, SSH aliases, and project
+switching, see `docs/PROFILE_SETUP_EXAMPLES.md`.
+
+See `docs/WORKFLOW.md` and `docs/PROFILE_REFERENCE.md` for detailed behavior and
+configuration reference.

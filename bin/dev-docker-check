@@ -43,7 +43,18 @@ docker_args+=(-v "$ROOT:/host_repo:ro" "$IMAGE")
 
 docker "${docker_args[@]}" bash -lc "
 set -euo pipefail
-source /opt/ros/noetic/setup.bash
+
+source_ros_setup() {
+  local setup_file="\$1"
+  # ROS1 setup hooks are not guaranteed to be nounset-safe. Disable only
+  # nounset while sourcing them, then restore strict mode for our commands.
+  set +u
+  # shellcheck disable=SC1090
+  source "\$setup_file"
+  set -u
+}
+
+source_ros_setup /opt/ros/noetic/setup.bash
 
 builder='$BUILDER'
 if [[ \"\$builder\" == auto ]]; then
@@ -65,16 +76,32 @@ cd /ws
 if [[ \"\$builder\" == catkin ]]; then
   catkin init
   catkin config --extend /opt/ros/noetic
-  catkin build '$PACKAGE' --no-status --cmake-args -DCATKIN_ENABLE_TESTING=$([[ "$RUN_TEST" -eq 1 ]] && echo ON || echo OFF)
-  source /ws/devel/setup.bash
+  if [[ -n '$PACKAGE' ]]; then
+    catkin build '$PACKAGE' --no-status --cmake-args -DCATKIN_ENABLE_TESTING=$([[ "$RUN_TEST" -eq 1 ]] && echo ON || echo OFF)
+  else
+    catkin build --no-status --cmake-args -DCATKIN_ENABLE_TESTING=$([[ "$RUN_TEST" -eq 1 ]] && echo ON || echo OFF)
+  fi
+  source_ros_setup /ws/devel/setup.bash
   if [[ '$RUN_TEST' -eq 1 ]]; then
-    catkin run_tests '$PACKAGE' --no-status
+    if [[ -n '$PACKAGE' ]]; then
+      catkin run_tests '$PACKAGE' --no-status
+    else
+      catkin run_tests --no-status
+    fi
   fi
 else
-  catkin_make --only-pkg-with-deps '$PACKAGE' -DCATKIN_ENABLE_TESTING=$([[ "$RUN_TEST" -eq 1 ]] && echo ON || echo OFF)
-  source /ws/devel/setup.bash
+  if [[ -n '$PACKAGE' ]]; then
+    catkin_make --only-pkg-with-deps '$PACKAGE' -DCATKIN_ENABLE_TESTING=$([[ "$RUN_TEST" -eq 1 ]] && echo ON || echo OFF)
+  else
+    catkin_make -DCATKIN_ENABLE_TESTING=$([[ "$RUN_TEST" -eq 1 ]] && echo ON || echo OFF)
+  fi
+  source_ros_setup /ws/devel/setup.bash
   if [[ '$RUN_TEST' -eq 1 ]]; then
-    catkin_make 'run_tests_$PACKAGE'
+    if [[ -n '$PACKAGE' ]]; then
+      catkin_make 'run_tests_$PACKAGE'
+    else
+      catkin_make run_tests
+    fi
   fi
 fi
 
